@@ -23,4 +23,7 @@ Some cool libraries that might be good to try:
 * [rkyv](https://rkyv.org/) Zero-copy 
 * [blake3](https://www.youtube.com/watch?v=h-0KLCAEZgY) faster hashing algorithm
 * Tokyo actors to simulate multiple servers?
-* Usage of `thiserror` and `anyhow` or `error-stack` to surface errors better.
+* Better error handling. For example
+  * Usage of `thiserror` and `anyhow` or `error-stack` to surface errors better.
+  * https://www.youtube.com/watch?v=s5S2Ed5T-dc
+  * https://www.youtube.com/watch?v=j-VQCYP7wyw
