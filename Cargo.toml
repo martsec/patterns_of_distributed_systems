@@ -1,0 +1,6 @@
+[package]
+name = "patterns_of_distributed_systems"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
