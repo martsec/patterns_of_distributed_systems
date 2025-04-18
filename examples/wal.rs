@@ -3,19 +3,20 @@ use rkyv::{access, rancor::Failure};
 use rkyv::{deserialize, rancor::Error, Archive, Deserialize, Serialize};
 use std::io::{self, Write};
 use std::io::{Read, Seek, SeekFrom};
+use std::process::abort;
 use std::{collections::HashMap, fs::File};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut kv = KVStore::new(true)?;
-    kv.put("hello", "world");
-    //kv.put(
-    //    "PLAI",
-    //    "Is a card game for developers and people working in tech. It's sarcastic.",
-    //);
-    //kv.put("nyx", "is a small female cat, godess of the night");
+    let mut batch = WriteBatch::default();
+    batch.put("hello", "world");
+    batch.put("PLAI", "is a sarcastic card game for developers.");
+
+    kv.put_batch(batch);
+    kv.put("nyx", "is a small female cat, godess of the night");
     std::mem::drop(kv);
 
-    println!("\n\n\nInitializing a new store, reading from WAL");
+    println!("\n\nInitializing a new store, reading from WAL");
     let mut kv2 = KVStore::open()?;
     println!("\n\n{:?}", kv2);
     Ok(())
@@ -61,37 +62,82 @@ impl KVStore {
     }
 
     pub fn put(&mut self, key: &str, value: &str) {
-        self.append_log(key, value);
-        self.put_no_log(key, value);
+        self.append_log(WalEntry::Set(SetValueCommand {
+            key: key.into(),
+            value: value.into(),
+        }));
+        self.apply_put(key, value);
     }
 
-    fn put_no_log(&mut self, key: &str, value: &str) {
+    pub fn put_batch(&mut self, batch: WriteBatch) {
+        self.append_log(WalEntry::Batch(WriteBatchCommand {
+            kv: batch.elements.clone(),
+        }));
+    }
+
+    fn append_log(&mut self, entry: WalEntry) {
+        self.wal.write(entry);
+    }
+
+    fn apply_put(&mut self, key: &str, value: &str) {
         self.kv.insert(key.into(), value.into());
     }
 
-    fn append_log(&mut self, key: &str, value: &str) {
-        self.wal.write(SetValueCommand {
-            key: key.into(),
-            value: value.into(),
-        });
+    fn apply_batch(&mut self, kv: HashMap<String, String>) {
+        self.kv.extend(kv);
     }
-
     /// Reads content from WAL and applies it to the state
     fn apply_log(&mut self) {
         let wal_entries = self.wal.read();
         for result in wal_entries {
             match result {
                 Err(e) => println!("Error reading: {:?}", e),
-                Ok(cmd) => self.put_no_log(&cmd.key, &cmd.value),
+                Ok(cmd) => match cmd {
+                    WalEntry::Set(c) => self.apply_put(&c.key, &c.value),
+                    WalEntry::Batch(b) => self.apply_batch(b.kv),
+                },
             }
         }
     }
 }
 
+#[derive(Default, Debug)]
+struct WriteBatch {
+    elements: HashMap<String, String>,
+}
+
+impl WriteBatch {
+    fn put(&mut self, key: &str, value: &str) {
+        self.elements.insert(key.into(), value.into());
+    }
+}
+
 #[derive(Archive, Deserialize, Serialize, Debug)]
-struct SetValueCommand {
-    key: String,
-    value: String,
+pub struct SetValueCommand {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Archive, Deserialize, Serialize, Debug)]
+pub struct WriteBatchCommand {
+    pub kv: HashMap<String, String>,
+}
+
+#[derive(Archive, Deserialize, Serialize, Debug)]
+pub enum WalEntry {
+    Set(SetValueCommand),
+    Batch(WriteBatchCommand),
+}
+
+impl WalEntry {
+    fn serialize(&self) -> rkyv::util::AlignedVec {
+        rkyv::to_bytes::<Error>(self).expect("serialize WalEntry")
+    }
+
+    fn deserialize(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let archived = rkyv::access::<ArchivedWalEntry, Failure>(bytes)?;
+        Ok(rkyv::deserialize::<WalEntry, Error>(archived)?)
+    }
 }
 
 impl SetValueCommand {
@@ -139,25 +185,25 @@ impl WriteAheadLog {
     ///│ 4‑byte len = │  N bytes  ││ 4‑byte len = │  M bytes  ││ 4‑byte len = │  K bytes  │ …
     ///│  first blob  │〈archive〉││ second blob  │〈archive〉││ third blob   │〈archive〉│
     ///└──────────────┴───────────┘└──────────────┴───────────┘└──────────────┴───────────┘
-    pub fn write(&mut self, cmd: SetValueCommand) -> Result<(), std::io::Error> {
+    ///
+    /// It's not calling flush() constantly since we are not using a BufWriter as of now.
+    pub fn write(&mut self, cmd: WalEntry) -> Result<(), std::io::Error> {
         let blob = cmd.serialize();
         let blob_len = blob.len() as u32;
 
         self.file.write_all(&blob_len.to_le_bytes())?;
         self.file.write_all(&blob)?;
-        // TODO: this is not optimal since we are reading constantly & is not even a guarantee
-        //self.file.flush()?;
         println!("\tAppending log {:?}", cmd);
         Ok(())
     }
 
-    pub fn read(&mut self) -> Vec<Result<SetValueCommand, Box<dyn std::error::Error + 'static>>> {
+    pub fn read(&mut self) -> Vec<Result<WalEntry, Box<dyn std::error::Error + 'static>>> {
         // Make sure we start at the beginning.
         if let Err(e) = self.file.rewind() {
             return vec![Err(Box::new(e))];
         }
 
-        let mut out: Vec<Result<SetValueCommand, Box<dyn std::error::Error>>> = Vec::new();
+        let mut out: Vec<Result<WalEntry, Box<dyn std::error::Error>>> = Vec::new();
         let mut len_buf = [0u8; 4];
 
         loop {
@@ -181,7 +227,7 @@ impl WriteAheadLog {
             }
 
             // 3. Validate + deserialize
-            let deser = SetValueCommand::deserialize(&buf);
+            let deser = WalEntry::deserialize(&buf);
             out.push(deser);
         }
 
@@ -190,6 +236,9 @@ impl WriteAheadLog {
 }
 
 impl Drop for WriteAheadLog {
+    /// Safeguard against "safe" exits.
+    ///
+    /// Does not work in external kill signals like sigkill, oom, power loss, segfault...
     fn drop(&mut self) {
         println!("  --> Flushing");
         if let Err(e) = self.file.flush() {
