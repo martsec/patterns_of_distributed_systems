@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use crate::wal::{WALConfig, WalEntry, WriteAheadLog};
+use crate::wal::{ArchivedWalEntry, WALConfig, WalEntry, WriteAheadLog};
 
 #[derive(Debug)]
-struct KVStore {
+pub struct KVStore {
     kv: HashMap<String, String>,
     wal: WriteAheadLog,
 }
@@ -20,7 +20,7 @@ impl KVStore {
             kv: HashMap::default(),
         };
 
-        store.apply_log();
+        store.apply_log()?;
         Ok(store)
     }
 
@@ -63,17 +63,20 @@ impl KVStore {
         self.kv.extend(kv);
     }
     /// Reads content from WAL and applies it to the state
-    fn apply_log(&mut self) {
-        let wal_entries = self.wal.read();
-        for result in wal_entries {
-            match result {
-                Err(e) => println!("Error reading: {:?}", e),
-                Ok(cmd) => match cmd {
-                    WalEntry::Set(k, v) => self.apply_put(&k, &v),
-                    WalEntry::Batch(kv) => self.apply_batch(kv),
-                },
+    fn apply_log(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        while let Some(wal_entry) = self.wal.read_next()? {
+            match wal_entry.zero_copy()? {
+                ArchivedWalEntry::Set(k, v) => self.apply_put(k, v),
+                ArchivedWalEntry::Batch(kv) => {
+                    // TODO: I should ideally use `self.apply_batch()` ?
+                    self.kv.extend(
+                        kv.iter()
+                            .map(|(k, v)| (k.as_str().to_owned(), v.as_str().to_owned())),
+                    );
+                }
             }
         }
+        Ok(())
     }
 }
 

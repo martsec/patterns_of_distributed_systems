@@ -84,34 +84,39 @@ impl WriteAheadLog {
         }
 
         let mut out: Vec<Result<WalEntry, Box<dyn std::error::Error>>> = Vec::new();
-        let mut len_buf = [0u8; 4];
+        let mut archive_lenght_marker = [0u8; 4];
 
         loop {
-            // 1. Read the length prefix
-            match self.file.read_exact(&mut len_buf) {
-                Ok(()) => {}
-                // Clean EOF – we’re done.
-                Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => {
-                    out.push(Err(Box::new(e)));
-                    break;
+            let buf = self.read_next();
+            match buf {
+                Err(e) => out.push(Err(e)),
+                Ok(Some(wf)) => {
+                    let deser = WalEntry::deserialize(&wf.buf);
+                    out.push(deser);
                 }
+                Ok(None) => break,
             }
-            let len = u32::from_le_bytes(len_buf) as usize;
-
-            // 2. Pull the archive itself
-            let mut buf = vec![0u8; len];
-            if let Err(e) = self.file.read_exact(&mut buf) {
-                out.push(Err(Box::new(e)));
-                break;
-            }
-
-            // 3. Validate + deserialize
-            let deser = WalEntry::deserialize(&buf);
-            out.push(deser);
         }
 
         out
+    }
+
+    /// This reads the individual bytes from file but returns a wrapper around the zero copy data
+    pub fn read_next(&mut self) -> Result<Option<WalFrame>, Box<dyn std::error::Error>> {
+        let mut archive_lenght_marker = [0u8; 4];
+        // 1. Read the length prefix
+        match self.file.read_exact(&mut archive_lenght_marker) {
+            Ok(()) => {} // Read ok
+            Err(e) => return Ok(None),
+        }
+        let lenght_of_archive = u32::from_le_bytes(archive_lenght_marker) as usize;
+
+        // 2. Pull the archive itself
+        let mut buf = vec![0u8; lenght_of_archive];
+        if let Err(e) = self.file.read_exact(&mut buf) {
+            return Err(Box::new(e));
+        }
+        Ok(Some(WalFrame { buf }))
     }
 }
 
@@ -120,10 +125,20 @@ impl Drop for WriteAheadLog {
     ///
     /// Does not work in external kill signals like sigkill, oom, power loss, segfault...
     fn drop(&mut self) {
-        println!("  --> Flushing");
         if let Err(e) = self.file.flush() {
             eprintln!("WAL: failed to flush on drop: {e}");
             // TODO: return this as a critical error in the error stack
         }
+    }
+}
+
+// Contains the entry bytes and it's zero copy
+pub struct WalFrame {
+    pub buf: Vec<u8>,
+}
+
+impl WalFrame {
+    pub fn zero_copy(&self) -> Result<&ArchivedWalEntry, Box<dyn std::error::Error>> {
+        WalEntry::zero_copy(&self.buf)
     }
 }
