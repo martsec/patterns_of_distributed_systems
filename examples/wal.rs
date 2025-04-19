@@ -134,20 +134,14 @@ impl WalEntry {
         rkyv::to_bytes::<Error>(self).expect("serialize WalEntry")
     }
 
-    fn deserialize(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+    fn deserialize<'a>(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        // This is not too efficient since we are deserializing and thus copying data
+        // We Should pass around the archived reference
         let archived = rkyv::access::<ArchivedWalEntry, Failure>(bytes)?;
         Ok(rkyv::deserialize::<WalEntry, Error>(archived)?)
     }
-}
-
-impl SetValueCommand {
-    fn serialize(&self) -> rkyv::util::AlignedVec {
-        rkyv::to_bytes::<Error>(self).unwrap()
-    }
-
-    fn deserialize(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-        let a = access::<ArchivedSetValueCommand, Failure>(bytes)?;
-        Ok(deserialize::<Self, Error>(a)?)
+    fn zero_copy(bytes: &[u8]) -> Result<&ArchivedWalEntry, Box<dyn std::error::Error>> {
+        Ok(rkyv::access::<ArchivedWalEntry, Failure>(bytes)?)
     }
 }
 
@@ -198,6 +192,9 @@ impl WriteAheadLog {
     }
 
     pub fn read(&mut self) -> Vec<Result<WalEntry, Box<dyn std::error::Error + 'static>>> {
+        // Of course, reading the entire file and sending a Vec is not optimal.
+        // We should just have a generator
+
         // Make sure we start at the beginning.
         if let Err(e) = self.file.rewind() {
             return vec![Err(Box::new(e))];
