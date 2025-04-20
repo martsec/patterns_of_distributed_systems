@@ -70,7 +70,6 @@ impl WriteAheadLog {
 
         self.file.write_all(&blob_len.to_le_bytes())?;
         self.file.write_all(&blob)?;
-        println!("\tAppending log {:?}", cmd);
         Ok(())
     }
 

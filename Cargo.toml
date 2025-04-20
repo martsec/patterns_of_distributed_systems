@@ -3,5 +3,14 @@ name = "patterns_of_distributed_systems"
 version = "0.1.0"
 edition = "2021"
 
+
 [dependencies]
+once_cell = "1.21.3"
 rkyv = { version = "0.8.10", features = ["bytecheck"] }
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "kvstore_bench"
+harness = false

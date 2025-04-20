@@ -1,9 +1,7 @@
 use std::error::Error;
 
-use kv_store::{KVStore, WriteBatch};
+use patterns_of_distributed_systems::{KVStore, WriteBatch};
 
-mod kv_store;
-mod wal;
 fn main() -> Result<(), Box<dyn Error>> {
     let mut kvstore = KVStore::new(true)?;
 
