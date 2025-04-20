@@ -15,30 +15,29 @@ fn criterion_config() -> Criterion {
 /* ---------------------------------------------------------------------
 Benchmark 1: 1 000 individual puts
 ------------------------------------------------------------------ */
-fn bench_put_1000(c: &mut Criterion) {
-    c.bench_function("put_1000", |b| {
+fn bench_put_400(c: &mut Criterion) {
+    c.bench_function("put_400", |b| {
         b.iter(|| {
-            // truncate=true gives a clean file for every iteration
             let mut store = KVStore::new(true).unwrap();
 
-            for i in 0..1000 {
+            for i in 0..400 {
                 store.put(&format!("k{i}"), "value");
             }
 
-            black_box(store); // make sure work isn't optimized away
+            black_box(store);
         })
     });
 }
 
 /* ---------------------------------------------------------------------
-Benchmark 2: 500 batches × 3 elements
+Benchmark 2: 200 batches × 3 elements
 ------------------------------------------------------------------ */
-fn bench_batch_500x3(c: &mut Criterion) {
-    c.bench_function("batch_500x3", |b| {
+fn bench_batch_200x3(c: &mut Criterion) {
+    c.bench_function("batch_200x3", |b| {
         b.iter(|| {
             let mut store = KVStore::new(true).unwrap();
 
-            for batch_idx in 0..500 {
+            for batch_idx in 0..200 {
                 let mut batch = WriteBatch::default();
                 for item_idx in 0..3 {
                     batch.put(&format!("k{}_{}", batch_idx, item_idx), "value");
@@ -59,10 +58,9 @@ static PREPARED: Lazy<()> = Lazy::new(|| {
     // measures the *read* path.
     let _ = fs::remove_file(READ_WAL_PATH); // ignore error if missing
     let mut store = KVStore::new(true /* truncate */).unwrap();
-    for i in 0..1000 {
+    for i in 0..500 {
         store.put(&format!("k{i}"), "value");
     }
-    // store dropped here → WAL closed / flushed
 });
 
 fn bench_read_existing(c: &mut Criterion) {
@@ -71,7 +69,6 @@ fn bench_read_existing(c: &mut Criterion) {
         Lazy::force(&PREPARED);
 
         b.iter(|| {
-            // open(false) replays the log into memory
             let store = KVStore::open().unwrap();
             black_box(store);
         })
@@ -82,7 +79,7 @@ fn bench_read_existing(c: &mut Criterion) {
 criterion_group! {
     name = kvstore_benches;
     config = criterion_config();
-    targets = bench_put_1000, bench_batch_500x3, bench_read_existing
+    targets = bench_put_400, bench_batch_200x3, bench_read_existing
 }
 
 criterion_main!(kvstore_benches);
