@@ -1,10 +1,16 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use std::fs;
+use std::{fs, time::Duration};
 
 use once_cell::sync::Lazy;
 use patterns_of_distributed_systems::{KVStore, WriteBatch};
 
 const READ_WAL_PATH: &str = "/tmp/wal-read.log";
+
+fn criterion_config() -> Criterion {
+    Criterion::default()
+        .measurement_time(Duration::from_secs(10)) // or whatever
+        .configure_from_args()
+}
 
 /* ---------------------------------------------------------------------
 Benchmark 1: 1 000 individual puts
@@ -73,10 +79,10 @@ fn bench_read_existing(c: &mut Criterion) {
 }
 
 /* --------------------------------------------------------------------- */
-criterion_group!(
-    kvstore_benches,
-    bench_put_1000,
-    bench_batch_500x3,
-    bench_read_existing
-);
+criterion_group! {
+    name = kvstore_benches;
+    config = criterion_config();
+    targets = bench_put_1000, bench_batch_500x3, bench_read_existing
+}
+
 criterion_main!(kvstore_benches);
