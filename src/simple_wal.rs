@@ -6,8 +6,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::process::abort;
 use std::{collections::HashMap, fs::File};
 
-const GENERATION: u64 = 0;
-
 #[derive(Archive, Deserialize, Serialize, Debug)]
 pub enum WalEntry {
     Set(String, String),
@@ -30,19 +28,6 @@ impl WalEntry {
     }
 }
 
-// Contains the binary file data and some useful metadata.
-pub struct WalFrame {
-    pub index: u64,
-    pub generation: u64,
-    pub buf: Vec<u8>,
-}
-
-impl WalFrame {
-    pub fn zero_copy(&self) -> Result<&ArchivedWalEntry, Box<dyn std::error::Error>> {
-        WalEntry::zero_copy(&self.buf)
-    }
-}
-
 #[derive(Default, Debug)]
 pub struct WALConfig {
     pub path: String,
@@ -52,7 +37,6 @@ pub struct WALConfig {
 #[derive(Debug)]
 pub struct WriteAheadLog {
     file: File,
-    last_log_index: u64,
 }
 
 impl WriteAheadLog {
@@ -67,34 +51,25 @@ impl WriteAheadLog {
         };
 
         let f = f_opts.open(&cfg.path)?;
-        // TODO: read from last log index???
-        Ok(Self {
-            file: f,
-            last_log_index: 0,
-        })
+        Ok(Self { file: f })
     }
 }
 
 impl WriteAheadLog {
     /// Writes to a log file with the following structure
     ///
-    ///┌───────────┬────────────┬───────────┬───────────┐
-    ///│ 8-byte =  │ 8-byte =   │ 4-byte =  │ N bytes   │ …
-    ///│ log index │ generation │ blob size │ 〈blob〉  │
-    ///└───────────┴────────────┴───────────┴───────────┘
+    ///┌──────────────┬───────────┐┌──────────────┬───────────┐┌──────────────┬───────────┐
+    ///│ 4‑byte len = │  N bytes  ││ 4‑byte len = │  M bytes  ││ 4‑byte len = │  K bytes  │ …
+    ///│  first blob  │〈archive〉││ second blob  │〈archive〉││ third blob   │〈archive〉│
+    ///└──────────────┴───────────┘└──────────────┴───────────┘└──────────────┴───────────┘
     ///
     /// It's not calling flush() constantly since we are not using a BufWriter as of now.
     pub fn write(&mut self, cmd: WalEntry) -> Result<(), std::io::Error> {
         let blob = cmd.serialize();
         let blob_len = blob.len() as u32;
 
-        let new_index = self.last_log_index + 1;
-        self.file.write_all(&new_index.to_le_bytes())?;
-        let generation = GENERATION;
-        self.file.write_all(&generation.to_le_bytes())?;
         self.file.write_all(&blob_len.to_le_bytes())?;
         self.file.write_all(&blob)?;
-        self.last_log_index = new_index;
         Ok(())
     }
 
@@ -127,47 +102,20 @@ impl WriteAheadLog {
 
     /// This reads the individual bytes from file but returns a wrapper around the zero copy data
     pub fn read_next(&mut self) -> Result<Option<WalFrame>, Box<dyn std::error::Error>> {
-        let index_buf = self.read_u64();
-        if index_buf.is_none() {
-            // Empty buffer
-            return Ok(None);
+        let mut archive_lenght_marker = [0u8; 4];
+        // 1. Read the length prefix
+        match self.file.read_exact(&mut archive_lenght_marker) {
+            Ok(()) => {} // Read ok
+            Err(e) => return Ok(None),
         }
-        let index = index_buf.expect("This should never happen");
-
-        let generation = self.read_u64().expect("Malformed generation");
-        let lenght_of_archive = self
-            .read_blob_lenght()
-            .expect("Log has malformed blob lenght") as usize;
+        let lenght_of_archive = u32::from_le_bytes(archive_lenght_marker) as usize;
 
         // 2. Pull the archive itself
         let mut buf = vec![0u8; lenght_of_archive];
         if let Err(e) = self.file.read_exact(&mut buf) {
             return Err(Box::new(e));
         }
-
-        if index > self.last_log_index {
-            self.last_log_index = index;
-        }
-        Ok(Some(WalFrame {
-            buf,
-            generation,
-            index,
-        }))
-    }
-
-    fn read_blob_lenght(&mut self) -> Option<u32> {
-        let mut archive_lenght_marker = [0u8; 4];
-        if let Err(e) = self.file.read_exact(&mut archive_lenght_marker) {
-            return None;
-        }
-        Some(u32::from_le_bytes(archive_lenght_marker))
-    }
-    fn read_u64(&mut self) -> Option<u64> {
-        let mut buff = [0u8; 8];
-        if let Err(e) = self.file.read_exact(&mut buff) {
-            return None;
-        }
-        Some(u64::from_le_bytes(buff))
+        Ok(Some(WalFrame { buf }))
     }
 }
 
@@ -180,5 +128,16 @@ impl Drop for WriteAheadLog {
             eprintln!("WAL: failed to flush on drop: {e}");
             // TODO: return this as a critical error in the error stack
         }
+    }
+}
+
+// Contains the entry bytes and it's zero copy
+pub struct WalFrame {
+    pub buf: Vec<u8>,
+}
+
+impl WalFrame {
+    pub fn zero_copy(&self) -> Result<&ArchivedWalEntry, Box<dyn std::error::Error>> {
+        WalEntry::zero_copy(&self.buf)
     }
 }
