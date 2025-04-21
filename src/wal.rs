@@ -1,7 +1,7 @@
 #![allow(dead_code, unused, unused_imports)]
 use rkyv::{access, rancor::Failure};
 use rkyv::{deserialize, rancor::Error, Archive, Deserialize, Serialize};
-use std::io::{self, Write};
+use std::io::{self, IoSlice, Write};
 use std::io::{Read, Seek, SeekFrom};
 use std::process::abort;
 use std::{collections::HashMap, fs::File};
@@ -86,14 +86,20 @@ impl WriteAheadLog {
     /// It's not calling flush() constantly since we are not using a BufWriter as of now.
     pub fn write(&mut self, cmd: WalEntry) -> Result<(), std::io::Error> {
         let blob = cmd.serialize();
-        let blob_len = blob.len() as u32;
 
+        let blob_len = blob.len() as u32;
         let new_index = self.last_log_index + 1;
-        self.file.write_all(&new_index.to_le_bytes())?;
         let generation = GENERATION;
-        self.file.write_all(&generation.to_le_bytes())?;
-        self.file.write_all(&blob_len.to_le_bytes())?;
+        let mut header = [0u8; 20];
+        header[0..8].copy_from_slice(&new_index.to_le_bytes());
+        header[8..16].copy_from_slice(&generation.to_le_bytes());
+        header[16..20].copy_from_slice(&blob_len.to_le_bytes());
+
+        // Ideally we should just write once, but `write_vectored` might not write the  entire last
+        // buffer!!! So better be slow as of now
+        self.file.write_all(&header)?;
         self.file.write_all(&blob)?;
+
         self.last_log_index = new_index;
         Ok(())
     }
@@ -139,7 +145,6 @@ impl WriteAheadLog {
             .read_blob_lenght()
             .expect("Log has malformed blob lenght") as usize;
 
-        // 2. Pull the archive itself
         let mut buf = vec![0u8; lenght_of_archive];
         if let Err(e) = self.file.read_exact(&mut buf) {
             return Err(Box::new(e));
