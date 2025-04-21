@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::{fs, time::Duration};
+use tempfile::NamedTempFile;
 
 use once_cell::sync::Lazy;
 use patterns_of_distributed_systems::{KVStore, WriteBatch};
@@ -18,7 +19,9 @@ Benchmark 1: 1 000 individual puts
 fn bench_put_400(c: &mut Criterion) {
     c.bench_function("put_400", |b| {
         b.iter(|| {
-            let mut store = KVStore::new(true).unwrap();
+            let tmp = NamedTempFile::new().expect("");
+            let mut store =
+                KVStore::new(true, tmp.path().to_str().expect("")).expect("err with store");
 
             for i in 0..400 {
                 store.put(&format!("k{i}"), "value");
@@ -35,7 +38,9 @@ Benchmark 2: 200 batches × 3 elements
 fn bench_batch_200x3(c: &mut Criterion) {
     c.bench_function("batch_200x3", |b| {
         b.iter(|| {
-            let mut store = KVStore::new(true).unwrap();
+            let tmp = NamedTempFile::new().expect("");
+            let mut store =
+                KVStore::new(true, tmp.path().to_str().expect("")).expect("err with store");
 
             for batch_idx in 0..200 {
                 let mut batch = WriteBatch::default();
@@ -57,7 +62,8 @@ static PREPARED: Lazy<()> = Lazy::new(|| {
     // Build a WAL once (same size as benchmark 1) so each iteration only
     // measures the *read* path.
     let _ = fs::remove_file(READ_WAL_PATH); // ignore error if missing
-    let mut store = KVStore::new(true /* truncate */).unwrap();
+    let mut store =
+        KVStore::new(true /* truncate */, READ_WAL_PATH).expect("Error with opening store");
     for i in 0..500 {
         store.put(&format!("k{i}"), "value");
     }
@@ -69,7 +75,7 @@ fn bench_read_existing(c: &mut Criterion) {
         Lazy::force(&PREPARED);
 
         b.iter(|| {
-            let store = KVStore::open().unwrap();
+            let store = KVStore::open(READ_WAL_PATH).expect("");
             black_box(store);
         })
     });
