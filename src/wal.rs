@@ -7,6 +7,7 @@ use std::process::abort;
 use std::{collections::HashMap, fs::File};
 
 const GENERATION: u64 = 0;
+const HEADER_LEN: usize = 8 /*index*/ + 8 /*generation*/ + 4 /*blob len*/;
 
 #[derive(Archive, Deserialize, Serialize, Debug)]
 pub enum WalEntry {
@@ -133,19 +134,30 @@ impl WriteAheadLog {
 
     /// This reads the individual bytes from file but returns a wrapper around the zero copy data
     pub fn read_next(&mut self) -> Result<Option<WalFrame>, Box<dyn std::error::Error>> {
-        let index_buf = self.read_u64();
-        if index_buf.is_none() {
-            // Empty buffer
-            return Ok(None);
+        let mut hdr = [0u8; HEADER_LEN];
+
+        let mut read = 0;
+        while read < HEADER_LEN {
+            let n = self.file.read(&mut hdr[read..])?;
+            if n == 0 {
+                // EOF before *any* header byte ⇒ log exhausted
+                if read == 0 {
+                    return Ok(None);
+                }
+                return Err(Box::new(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated WAL header",
+                )));
+            }
+            read += n;
         }
-        let index = index_buf.expect("This should never happen");
 
-        let generation = self.read_u64().expect("Malformed generation");
-        let lenght_of_archive = self
-            .read_blob_lenght()
-            .expect("Log has malformed blob lenght") as usize;
+        let index = u64::from_le_bytes(hdr[0..8].try_into().expect("Issue with index"));
+        let generation = u64::from_le_bytes(hdr[8..16].try_into().expect("Issue with generation"));
+        let blob_len =
+            u32::from_le_bytes(hdr[16..20].try_into().expect("Issue with blob lenght")) as usize;
 
-        let mut buf = vec![0u8; lenght_of_archive];
+        let mut buf = vec![0u8; blob_len];
         if let Err(e) = self.file.read_exact(&mut buf) {
             return Err(Box::new(e));
         }
@@ -158,21 +170,6 @@ impl WriteAheadLog {
             generation,
             index,
         }))
-    }
-
-    fn read_blob_lenght(&mut self) -> Option<u32> {
-        let mut archive_lenght_marker = [0u8; 4];
-        if let Err(e) = self.file.read_exact(&mut archive_lenght_marker) {
-            return None;
-        }
-        Some(u32::from_le_bytes(archive_lenght_marker))
-    }
-    fn read_u64(&mut self) -> Option<u64> {
-        let mut buff = [0u8; 8];
-        if let Err(e) = self.file.read_exact(&mut buff) {
-            return None;
-        }
-        Some(u64::from_le_bytes(buff))
     }
 }
 
