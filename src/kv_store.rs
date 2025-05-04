@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::wal::{ArchivedWalEntry, WALConfig, WalEntry, WriteAheadLog};
+use crate::wal::wal::{ArchivedWalEntry, WALConfig, WalEntry, WriteAheadLog};
 
 #[derive(Debug)]
 pub struct KVStore {
